@@ -415,6 +415,12 @@ void Estimator::processIMU(double t, double dt, const Vector3d &linear_accelerat
     gyr_0 = angular_velocity; 
 }
 
+/**
+ * @brief 图像处理
+ * 
+ * @param image 
+ * @param header 
+ */
 void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> &image, const double header)
 {
     ROS_DEBUG("new image coming ------------------------------------------");

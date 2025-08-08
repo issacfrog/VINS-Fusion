@@ -25,6 +25,10 @@ using namespace Eigen;
 #include "parameters.h"
 #include "../utility/tic_toc.h"
 
+/**
+ * @brief 每个点的特征，包括3d坐标、2d坐标 图像坐标系下的速度！！注意是图像坐标系下的速度！！
+ * 
+ */
 class FeaturePerFrame
 {
   public:

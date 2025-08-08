@@ -48,7 +48,15 @@ int FeatureManager::getFeatureCount()
     return cnt;
 }
 
-
+/**
+ * @brief 在将当前帧的特征点加入到系统中之前，判断是否满足足够的视差条件，从而决定是否触发新一轮滑窗优化（如滑窗内状态初始化、BA、三角化等）。
+ * 
+ * @param frame_count 
+ * @param image featureframe 由frameid和提取的速度特征等组成
+ * @param td 
+ * @return true 
+ * @return false 
+ */
 bool FeatureManager::addFeatureCheckParallax(int frame_count, const map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> &image, double td)
 {
     ROS_DEBUG("input feature: %d", (int)image.size());
@@ -59,6 +67,7 @@ bool FeatureManager::addFeatureCheckParallax(int frame_count, const map<int, vec
     last_average_parallax = 0;
     new_feature_num = 0;
     long_track_num = 0;
+    // 遍历当前帧的特征点
     for (auto &id_pts : image)
     {
         FeaturePerFrame f_per_fra(id_pts.second[0].second, td);
@@ -75,13 +84,15 @@ bool FeatureManager::addFeatureCheckParallax(int frame_count, const map<int, vec
             return it.feature_id == feature_id;
                           });
 
-        if (it == feature.end())
+        // 如果是新特征则建立该特征
+        // 如果是旧特征，则更新追踪次数，如果追踪超过4帧，则记为长跟踪特征
+        if (it == feature.end())    // 新特征
         {
             feature.push_back(FeaturePerId(feature_id, frame_count));
             feature.back().feature_per_frame.push_back(f_per_fra);
             new_feature_num++;
         }
-        else if (it->feature_id == feature_id)
+        else if (it->feature_id == feature_id)    // 旧特征
         {
             it->feature_per_frame.push_back(f_per_fra);
             last_track_num++;
@@ -92,14 +103,17 @@ bool FeatureManager::addFeatureCheckParallax(int frame_count, const map<int, vec
 
     //if (frame_count < 2 || last_track_num < 20)
     //if (frame_count < 2 || last_track_num < 20 || new_feature_num > 0.5 * last_track_num)
+    // 如果是新的或者这里罗列的条件的特征，那么不用检查其平行特性
     if (frame_count < 2 || last_track_num < 20 || long_track_num < 40 || new_feature_num > 0.5 * last_track_num)
         return true;
 
+    // 筛选出最近两帧都看到的特征
     for (auto &it_per_id : feature)
     {
         if (it_per_id.start_frame <= frame_count - 2 &&
             it_per_id.start_frame + int(it_per_id.feature_per_frame.size()) - 1 >= frame_count - 1)
         {
+            // 计算视差
             parallax_sum += compensatedParallax2(it_per_id, frame_count);
             parallax_num++;
         }
@@ -111,6 +125,7 @@ bool FeatureManager::addFeatureCheckParallax(int frame_count, const map<int, vec
     }
     else
     {
+        // 根据平均视差变化，来判断是否触发三角化等处理
         ROS_DEBUG("parallax_sum: %lf, parallax_num: %d", parallax_sum, parallax_num);
         ROS_DEBUG("current parallax: %lf", parallax_sum / parallax_num * FOCAL_LENGTH);
         last_average_parallax = parallax_sum / parallax_num * FOCAL_LENGTH;
@@ -527,10 +542,25 @@ void FeatureManager::removeFront(int frame_count)
     }
 }
 
+/**
+ * @brief 在 VINS-Fusion 中，前端特征追踪完后，会把特征点存储在 FeatureManager 中。
+ *  其中：
+ *  FeaturePerId 表示一个在多个帧中都被观测到的同一特征点。
+ *  FeaturePerFrame 表示该特征在某一帧中的观测。
+ *  point 是该特征在归一化平面（normalized plane）上的坐标（通常是三维，单位深度）。
+ *  start_frame 是该特征首次被观测到的帧编号。
+ * 
+ * 计算某个特征点在次新帧和此次新帧的视差
+ * 判断共视关系，实际是求取该特征在两帧的归一化平面上的坐标
+ * @param it_per_id 
+ * @param frame_count 当前窗口里面的帧数，注意帧数最大为window_size
+ * @return double 
+ */
 double FeatureManager::compensatedParallax2(const FeaturePerId &it_per_id, int frame_count)
 {
     //check the second last frame is keyframe or not
-    //parallax betwwen seconde last frame and third last frame
+    //parallax betwwen second last frame and third last frame
+    // 计算倒数第二帧和倒数第三帧的视差
     const FeaturePerFrame &frame_i = it_per_id.feature_per_frame[frame_count - 2 - it_per_id.start_frame];
     const FeaturePerFrame &frame_j = it_per_id.feature_per_frame[frame_count - 1 - it_per_id.start_frame];
 
@@ -543,6 +573,7 @@ double FeatureManager::compensatedParallax2(const FeaturePerId &it_per_id, int f
     Vector3d p_i = frame_i.point;
     Vector3d p_i_comp;
 
+    // 想进行旋转补偿，但是没有进行
     //int r_i = frame_count - 2;
     //int r_j = frame_count - 1;
     //p_i_comp = ric[camera_id_j].transpose() * Rs[r_j].transpose() * Rs[r_i] * ric[camera_id_i] * p_i;
