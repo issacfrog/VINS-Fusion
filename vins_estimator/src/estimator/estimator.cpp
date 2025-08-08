@@ -157,6 +157,13 @@ void Estimator::changeSensorType(int use_imu, int use_stereo)
     }
 }
 
+/**
+ * @brief 图像处理线程
+ * 
+ * @param t 
+ * @param _img 
+ * @param _img1 
+ */
 void Estimator::inputImage(double t, const cv::Mat &_img, const cv::Mat &_img1)
 {
     inputImageCnt++;
@@ -1461,6 +1468,10 @@ void Estimator::getPoseInWorldFrame(int index, Eigen::Matrix4d &T)
     T.block<3, 1>(0, 3) = Ps[index];
 }
 
+/**
+ * @brief 前后帧预测下一帧，匀速模型可以考虑细化一些
+ * 
+ */
 void Estimator::predictPtsInNextFrame()
 {
     //printf("predict pts in next frame\n");

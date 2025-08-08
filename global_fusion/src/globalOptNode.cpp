@@ -24,6 +24,11 @@
 #include <queue>
 #include <mutex>
 
+// 整体上是以GPS的位置为基础进行位姿的修正
+// 误差模型为标准模型，几个待改进的点
+// position_covariance直接引用的，没有进行进一步的处理
+// GPS位置变化或者收敛的过程中可能有跳变，这种跳变直接参与优化可能是会有问题的
+
 GlobalOptimization globalEstimator;
 ros::Publisher pub_global_odometry, pub_global_path, pub_car;
 nav_msgs::Path *global_path;

@@ -215,6 +215,7 @@ void GlobalOptimization::optimize()
             ceres::Solve(options, &problem, &summary);
             //std::cout << summary.BriefReport() << "\n";
 
+            // 看起来只对位姿进行了修正，没有对IMU进行相关建模了
             // update global pose
             //mPoseMap.lock();
             iter = globalPoseMap.begin();

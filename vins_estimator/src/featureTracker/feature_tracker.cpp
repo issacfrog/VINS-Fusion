@@ -91,6 +91,7 @@ double FeatureTracker::distance(cv::Point2f &pt1, cv::Point2f &pt2)
     return sqrt(dx * dx + dy * dy);
 }
 
+
 map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> FeatureTracker::trackImage(double _cur_time, const cv::Mat &_img, const cv::Mat &_img1)
 {
     TicToc t_r;
@@ -114,6 +115,7 @@ map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> FeatureTracker::trackIm
         TicToc t_o;
         vector<uchar> status;
         vector<float> err;
+        // 如果特征过少则再次计算光流
         if(hasPrediction)
         {
             cur_pts = predict_pts;
@@ -132,6 +134,7 @@ map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> FeatureTracker::trackIm
         else
             cv::calcOpticalFlowPyrLK(prev_img, cur_img, prev_pts, cur_pts, status, err, cv::Size(21, 21), 3);
         // reverse check
+        // 双向光流反向验证（可选）：防止误跟踪（如遮挡、漂移）
         if(FLOW_BACK)
         {
             vector<uchar> reverse_status;
@@ -164,6 +167,7 @@ map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> FeatureTracker::trackIm
     for (auto &n : track_cnt)
         n++;
 
+    // 为当前帧补充特征点
     if (1)
     {
         //rejectWithF();
@@ -196,9 +200,13 @@ map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> FeatureTracker::trackIm
         //printf("feature cnt after add %d\n", (int)ids.size());
     }
 
+    // 畸变矫正
     cur_un_pts = undistortedPts(cur_pts, m_camera[0]);
+    // 速度估计 每个点都加，还挺重
+    // 这里计算的只是二维的速度
     pts_velocity = ptsVelocity(ids, cur_un_pts, cur_un_pts_map, prev_un_pts_map);
 
+    // 双目匹配 左右图之间的匹配
     if(!_img1.empty() && stereo_cam)
     {
         ids_right.clear();
@@ -257,6 +265,7 @@ map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> FeatureTracker::trackIm
     for(size_t i = 0; i < cur_pts.size(); i++)
         prevLeftPtsMap[ids[i]] = cur_pts[i];
 
+    // 构造特征帧用于下一帧的处理
     map<int, vector<pair<int, Eigen::Matrix<double, 7, 1>>>> featureFrame;
     for (size_t i = 0; i < ids.size(); i++)
     {
