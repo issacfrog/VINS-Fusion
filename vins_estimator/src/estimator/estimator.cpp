@@ -114,7 +114,7 @@ void Estimator::setParameter()
     if (MULTIPLE_THREAD && !initThreadFlag)
     {
         initThreadFlag = true;
-        processThread = std::thread(&Estimator::processMeasurements, this);
+        processThread = std::thread(&Estimator::processMeasurements, this); // 多线程的时候单独启动processMeasurements处理 否则随传感器数据进行处理
     }
     mProcess.unlock();
 }
@@ -230,7 +230,16 @@ void Estimator::inputFeature(double t, const map<int, vector<pair<int, Eigen::Ma
         processMeasurements();
 }
 
-
+/**
+ * @brief 获取buffer内的IMU数据
+ * 
+ * @param t0 
+ * @param t1 
+ * @param accVector 
+ * @param gyrVector 
+ * @return true 
+ * @return false 
+ */
 bool Estimator::getIMUInterval(double t0, double t1, vector<pair<double, Eigen::Vector3d>> &accVector, 
                                 vector<pair<double, Eigen::Vector3d>> &gyrVector)
 {
@@ -266,6 +275,13 @@ bool Estimator::getIMUInterval(double t0, double t1, vector<pair<double, Eigen::
     return true;
 }
 
+/**
+ * @brief 判断IMU有效与否
+ * 
+ * @param t 
+ * @return true 
+ * @return false 
+ */
 bool Estimator::IMUAvailable(double t)
 {
     if(!accBuf.empty() && t <= accBuf.back().first)
@@ -274,6 +290,10 @@ bool Estimator::IMUAvailable(double t)
         return false;
 }
 
+/**
+ * @brief 
+ * 
+ */
 void Estimator::processMeasurements()
 {
     while (1)
@@ -285,6 +305,7 @@ void Estimator::processMeasurements()
         {
             feature = featureBuf.front();
             curTime = feature.first + td;
+            // 等待IMU数据
             while(1)
             {
                 if ((!USE_IMU  || IMUAvailable(feature.first + td)))
@@ -299,6 +320,7 @@ void Estimator::processMeasurements()
                 }
             }
             mBuf.lock();
+            // 取buffer数据
             if(USE_IMU)
                 getIMUInterval(prevTime, curTime, accVector, gyrVector);
 
@@ -348,7 +370,11 @@ void Estimator::processMeasurements()
     }
 }
 
-
+/**
+ * @brief 位姿初始化，比较简单忽略即可
+ * 
+ * @param accVector 
+ */
 void Estimator::initFirstIMUPose(vector<pair<double, Eigen::Vector3d>> &accVector)
 {
     printf("init first imu pose\n");
@@ -370,6 +396,12 @@ void Estimator::initFirstIMUPose(vector<pair<double, Eigen::Vector3d>> &accVecto
     //Vs[0] = Vector3d(5, 0, 0);
 }
 
+/**
+ * @brief 位姿初始化
+ * 
+ * @param p 
+ * @param r 
+ */
 void Estimator::initFirstPose(Eigen::Vector3d p, Eigen::Matrix3d r)
 {
     Ps[0] = p;
@@ -378,7 +410,14 @@ void Estimator::initFirstPose(Eigen::Vector3d p, Eigen::Matrix3d r)
     initR = r;
 }
 
-
+/**
+ * @brief 执行预积分，很明显这版代码还是比较早期的习惯了
+ * 
+ * @param t 
+ * @param dt 
+ * @param linear_acceleration 
+ * @param angular_velocity 
+ */
 void Estimator::processIMU(double t, double dt, const Vector3d &linear_acceleration, const Vector3d &angular_velocity)
 {
     if (!first_imu)
@@ -425,6 +464,8 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
 {
     ROS_DEBUG("new image coming ------------------------------------------");
     ROS_DEBUG("Adding feature points %lu", image.size());
+    // 如果不是平行的，则边缘化掉旧帧
+    // 否则边缘化掉第2新的帧，目的是为了保证有效观测的数量
     if (f_manager.addFeatureCheckParallax(frame_count, image, td))
     {
         marginalization_flag = MARGIN_OLD;
@@ -446,6 +487,7 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
     all_image_frame.insert(make_pair(header, imageframe));
     tmp_pre_integration = new IntegrationBase{acc_0, gyr_0, Bas[frame_count], Bgs[frame_count]};
 
+    // 如果外参需要校准，则执行外参校准操作
     if(ESTIMATE_EXTRINSIC == 2)
     {
         ROS_INFO("calibrating extrinsic param, rotation movement is needed");
@@ -464,6 +506,7 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
         }
     }
 
+    // 初始化与非初始化流程
     if (solver_flag == INITIAL)
     {
         // monocular + IMU initilization
@@ -549,22 +592,28 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
     }
     else
     {
+        // 如果没有IMU则使用PnP推算位姿
         TicToc t_solve;
         if(!USE_IMU)
             f_manager.initFramePoseByPnP(frame_count, Ps, Rs, tic, ric);
+        // 三角化&优化
         f_manager.triangulate(frame_count, Ps, Rs, tic, ric);
         optimization();
         set<int> removeIndex;
+        // 剔除外点
         outliersRejection(removeIndex);
         f_manager.removeOutlier(removeIndex);
         if (! MULTIPLE_THREAD)
         {
+            // 特征跟踪器也要剔除掉外点
             featureTracker.removeOutliers(removeIndex);
+            // 预测下一帧特征点
             predictPtsInNextFrame();
         }
             
         ROS_DEBUG("solver costs: %fms", t_solve.toc());
 
+        // 失效检测
         if (failureDetection())
         {
             ROS_WARN("failure detection!");
@@ -575,6 +624,7 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
             return;
         }
 
+        // 滑窗 这里的滑窗实际上是状态数据的维护与处理，并没有其他的操作
         slideWindow();
         f_manager.removeFailures();
         // prepare output of VINS
@@ -586,6 +636,7 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
         last_P = Ps[WINDOW_SIZE];
         last_R0 = Rs[0];
         last_P0 = Ps[0];
+        // 更新状态
         updateLatestStates();
     }  
 }
@@ -1138,7 +1189,7 @@ void Estimator::optimization()
         options.max_solver_time_in_seconds = SOLVER_TIME;
     TicToc t_solver;
     ceres::Solver::Summary summary;
-    ceres::Solve(options, &problem, &summary);
+    ceres::Solve(options, &problem, &summary);  // 执行求解
     //cout << summary.BriefReport() << endl;
     ROS_DEBUG("Iterations : %d", static_cast<int>(summary.iterations.size()));
     //printf("solver costs: %f \n", t_solver.toc());

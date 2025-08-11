@@ -34,6 +34,11 @@ void FeatureManager::clearState()
     feature.clear();
 }
 
+/**
+ * @brief 获取特征数量
+ * 
+ * @return int 
+ */
 int FeatureManager::getFeatureCount()
 {
     int cnt = 0;
