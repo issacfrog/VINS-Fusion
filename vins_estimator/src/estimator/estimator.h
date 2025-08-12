@@ -159,7 +159,7 @@ class Estimator
 
     int loop_window_index;
 
-    MarginalizationInfo *last_marginalization_info;
+    MarginalizationInfo *last_marginalization_info; // 边缘化信息，VINS核心点，在于历史信息的边缘化处理这些
     vector<double *> last_marginalization_parameter_blocks;
 
     map<double, ImageFrame> all_image_frame;

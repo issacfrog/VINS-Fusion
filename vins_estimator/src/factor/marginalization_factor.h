@@ -52,6 +52,11 @@ struct ThreadsStruct
     std::unordered_map<long, int> parameter_block_idx; //local size
 };
 
+/**
+ * @brief 滑动窗口的思想是保留最近的一些关键帧，对于更早的关键帧进行边缘化处理，用等价的约束因子替代他们
+ * 从而由此来降低计算量
+ * 
+ */
 class MarginalizationInfo
 {
   public:
@@ -64,13 +69,15 @@ class MarginalizationInfo
     void marginalize();
     std::vector<double *> getParameterBlocks(std::unordered_map<long, double *> &addr_shift);
 
-    std::vector<ResidualBlockInfo *> factors;
-    int m, n;
-    std::unordered_map<long, int> parameter_block_size; //global size
-    int sum_block_size;
+    std::vector<ResidualBlockInfo *> factors;   // 存储所有参与边缘化的残差块（残差+雅可比信息矩阵） 
+    int m, n; // 总残差与总变量维度
+    int sum_block_size; // 参数块维度总和
+    // 参数块信息
+    std::unordered_map<long, int> parameter_block_size; //global size   // 总维度
     std::unordered_map<long, int> parameter_block_idx; //local size
     std::unordered_map<long, double *> parameter_block_data;
 
+    // 保留的参数块（边缘化后剩下的）
     std::vector<int> keep_block_size; //global size
     std::vector<int> keep_block_idx;  //local size
     std::vector<double *> keep_block_data;

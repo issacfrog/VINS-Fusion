@@ -95,6 +95,11 @@ MarginalizationInfo::~MarginalizationInfo()
     }
 }
 
+/**
+ * @brief 添加残差因子
+ * 
+ * @param residual_block_info 
+ */
 void MarginalizationInfo::addResidualBlockInfo(ResidualBlockInfo *residual_block_info)
 {
     factors.emplace_back(residual_block_info);
@@ -102,34 +107,47 @@ void MarginalizationInfo::addResidualBlockInfo(ResidualBlockInfo *residual_block
     std::vector<double *> &parameter_blocks = residual_block_info->parameter_blocks;
     std::vector<int> parameter_block_sizes = residual_block_info->cost_function->parameter_block_sizes();
 
+    // 遍历因子的所有参数块，比如重投影可能有相机位姿和路标点坐标两个参数块
     for (int i = 0; i < static_cast<int>(residual_block_info->parameter_blocks.size()); i++)
     {
         double *addr = parameter_blocks[i];
         int size = parameter_block_sizes[i];
-        parameter_block_size[reinterpret_cast<long>(addr)] = size;
+        // 将地址转换为long类型，然后添加到parameter_block_size中 由此来作为唯一id
+        parameter_block_size[reinterpret_cast<long>(addr)] = size;  // 向unordered_map中添加大小
     }
 
+    // 遍历标记需要被边缘化的参数块
     for (int i = 0; i < static_cast<int>(residual_block_info->drop_set.size()); i++)
     {
+        // 获取索引，这里比较有意思的是索引的方式
         double *addr = parameter_blocks[residual_block_info->drop_set[i]];
+        // 默认要边缘化的部分局部维度设定为0
         parameter_block_idx[reinterpret_cast<long>(addr)] = 0;
     }
 }
 
+/**
+ * @brief 边缘化前的准备工作
+ * 
+ */
 void MarginalizationInfo::preMarginalize()
 {
     for (auto it : factors)
     {
+        // Evaluate中完成雅可比与残差的计算
         it->Evaluate();
 
         std::vector<int> block_sizes = it->cost_function->parameter_block_sizes();
+        // 遍历
         for (int i = 0; i < static_cast<int>(block_sizes.size()); i++)
         {
+            // 算索引
             long addr = reinterpret_cast<long>(it->parameter_blocks[i]);
             int size = block_sizes[i];
             if (parameter_block_data.find(addr) == parameter_block_data.end())
             {
                 double *data = new double[size];
+                // 将迭代器中的parameter_blocks塞入到总的队列中
                 memcpy(data, it->parameter_blocks[i], sizeof(double) * size);
                 parameter_block_data[addr] = data;
             }
@@ -147,6 +165,12 @@ int MarginalizationInfo::globalSize(int size) const
     return size == 6 ? 7 : size;
 }
 
+/**
+ * @brief 执行高斯牛顿的矩阵拼接操作
+ * 
+ * @param threadsstruct 
+ * @return void* 
+ */
 void* ThreadsConstructA(void* threadsstruct)
 {
     ThreadsStruct* p = ((ThreadsStruct*)threadsstruct);
@@ -180,6 +204,11 @@ void* ThreadsConstructA(void* threadsstruct)
     return threadsstruct;
 }
 
+/**
+ * @brief 边缘化操作，使用schur补留下要保留维度的信息
+ * 舒尔补之后将信息保存在linearized_jacobians和linearized_residuals中
+ * 
+ */
 void MarginalizationInfo::marginalize()
 {
     int pos = 0;
@@ -189,10 +218,11 @@ void MarginalizationInfo::marginalize()
         pos += localSize(parameter_block_size[it.first]);
     }
 
-    m = pos;
+    m = pos; // m在parameter_block_idx中进行搜索，也即搜索的是要边缘化的模块
 
     for (const auto &it : parameter_block_size)
     {
+        // 在所有因子中进行搜索，同时避免待边缘化的模块被重复搜索
         if (parameter_block_idx.find(it.first) == parameter_block_idx.end())
         {
             parameter_block_idx[it.first] = pos;
@@ -200,8 +230,9 @@ void MarginalizationInfo::marginalize()
         }
     }
 
-    n = pos - m;
-    //ROS_INFO("marginalization, pos: %d, m: %d, n: %d, size: %d", pos, m, n, (int)parameter_block_idx.size());
+    n = pos - m;    // 要保留的模块的维度
+
+    // 本质上不是不稳定，而是没有需要边缘化的部分
     if(m == 0)
     {
         valid = false;
@@ -209,39 +240,12 @@ void MarginalizationInfo::marginalize()
         return;
     }
 
+    // pos是总维度
     TicToc t_summing;
     Eigen::MatrixXd A(pos, pos);
     Eigen::VectorXd b(pos);
     A.setZero();
     b.setZero();
-    /*
-    for (auto it : factors)
-    {
-        for (int i = 0; i < static_cast<int>(it->parameter_blocks.size()); i++)
-        {
-            int idx_i = parameter_block_idx[reinterpret_cast<long>(it->parameter_blocks[i])];
-            int size_i = localSize(parameter_block_size[reinterpret_cast<long>(it->parameter_blocks[i])]);
-            Eigen::MatrixXd jacobian_i = it->jacobians[i].leftCols(size_i);
-            for (int j = i; j < static_cast<int>(it->parameter_blocks.size()); j++)
-            {
-                int idx_j = parameter_block_idx[reinterpret_cast<long>(it->parameter_blocks[j])];
-                int size_j = localSize(parameter_block_size[reinterpret_cast<long>(it->parameter_blocks[j])]);
-                Eigen::MatrixXd jacobian_j = it->jacobians[j].leftCols(size_j);
-                if (i == j)
-                    A.block(idx_i, idx_j, size_i, size_j) += jacobian_i.transpose() * jacobian_j;
-                else
-                {
-                    A.block(idx_i, idx_j, size_i, size_j) += jacobian_i.transpose() * jacobian_j;
-                    A.block(idx_j, idx_i, size_j, size_i) = A.block(idx_i, idx_j, size_i, size_j).transpose();
-                }
-            }
-            b.segment(idx_i, size_i) += jacobian_i.transpose() * it->residuals;
-        }
-    }
-    ROS_INFO("summing up costs %f ms", t_summing.toc());
-    */
-    //multi thread
-
 
     TicToc t_thread_summing;
     pthread_t tids[NUM_THREADS];
@@ -253,6 +257,8 @@ void MarginalizationInfo::marginalize()
         i++;
         i = i % NUM_THREADS;
     }
+    // 多线程构建高斯牛顿 值得注意的是这里每个矩阵都构建成pos*pos的矩阵
+    // 后续使用这个矩阵直接进行累加，而不是进行的矩阵拼接
     for (int i = 0; i < NUM_THREADS; i++)
     {
         TicToc zero_matrix;
@@ -267,19 +273,17 @@ void MarginalizationInfo::marginalize()
             ROS_BREAK();
         }
     }
+    // 完成高斯牛顿的构建了
     for( int i = NUM_THREADS - 1; i >= 0; i--)  
     {
         pthread_join( tids[i], NULL ); 
         A += threadsstruct[i].A;
         b += threadsstruct[i].b;
     }
-    //ROS_DEBUG("thread summing up costs %f ms", t_thread_summing.toc());
-    //ROS_INFO("A diff %f , b diff %f ", (A - tmp_A).sum(), (b - tmp_b).sum());
-
 
     //TODO
     Eigen::MatrixXd Amm = 0.5 * (A.block(0, 0, m, m) + A.block(0, 0, m, m).transpose());
-    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> saes(Amm);
+    Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> saes(Amm); // Amm的伴随矩阵，目前看只是在计算矩的逆的时候进行加速用的
 
     //ROS_ASSERT_MSG(saes.eigenvalues().minCoeff() >= -1e-4, "min eigenvalue %f", saes.eigenvalues().minCoeff());
 
@@ -291,6 +295,8 @@ void MarginalizationInfo::marginalize()
     Eigen::MatrixXd Arm = A.block(m, 0, n, m);
     Eigen::MatrixXd Arr = A.block(m, m, n, n);
     Eigen::VectorXd brr = b.segment(m, n);
+    // 执行舒尔补操作
+    // 注舒尔补实际上只保留要求解部分的信息了
     A = Arr - Arm * Amm_inv * Amr;
     b = brr - Arm * Amm_inv * bmm;
 
@@ -303,11 +309,6 @@ void MarginalizationInfo::marginalize()
 
     linearized_jacobians = S_sqrt.asDiagonal() * saes2.eigenvectors().transpose();
     linearized_residuals = S_inv_sqrt.asDiagonal() * saes2.eigenvectors().transpose() * b;
-    //std::cout << A << std::endl
-    //          << std::endl;
-    //std::cout << linearized_jacobians << std::endl;
-    //printf("error2: %f %f\n", (linearized_jacobians.transpose() * linearized_jacobians - A).sum(),
-    //      (linearized_jacobians.transpose() * linearized_residuals - b).sum());
 }
 
 std::vector<double *> MarginalizationInfo::getParameterBlocks(std::unordered_map<long, double *> &addr_shift)

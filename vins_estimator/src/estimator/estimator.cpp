@@ -291,7 +291,7 @@ bool Estimator::IMUAvailable(double t)
 }
 
 /**
- * @brief 
+ * @brief 多线程涉及的处理，只是处理流程上的差异
  * 
  */
 void Estimator::processMeasurements()
@@ -455,7 +455,7 @@ void Estimator::processIMU(double t, double dt, const Vector3d &linear_accelerat
 }
 
 /**
- * @brief 图像处理
+ * @brief 图像处理流程
  * 
  * @param image 
  * @param header 
@@ -556,7 +556,7 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
                 optimization();
                 updateLatestStates();
                 solver_flag = NON_LINEAR;
-                slideWindow();
+                slideWindow();  // 优化后滑窗
                 ROS_INFO("Initialization finish!");
             }
         }
@@ -879,6 +879,10 @@ bool Estimator::relativePose(Matrix3d &relative_R, Vector3d &relative_T, int &l)
     return false;
 }
 
+/**
+ * @brief 误差的展开与矢量化
+ * 
+ */
 void Estimator::vector2double()
 {
     for (int i = 0; i <= WINDOW_SIZE; i++)
@@ -1009,13 +1013,17 @@ void Estimator::double2vector()
     VectorXd dep = f_manager.getDepthVector();
     for (int i = 0; i < f_manager.getFeatureCount(); i++)
         dep(i) = para_Feature[i][0];
-    f_manager.setDepth(dep);
+    f_manager.setDepth(dep);    // 优化量，值得注意的是这里会设置深度，根据深度判断是否是有效的
 
     if(USE_IMU)
         td = para_Td[0][0];
 
 }
 
+/**
+ * @brief 故障诊断
+ * 
+ */
 bool Estimator::failureDetection()
 {
     return false;
@@ -1065,6 +1073,17 @@ bool Estimator::failureDetection()
     return false;
 }
 
+/**
+ * @brief 优化代码
+ * 主要执行优化与边缘化
+ * 这里值得注意的是优化与边缘化之间的处理顺序
+ * 在执行中是先执行优化再进行边缘化，具体原因包括：
+ * 1.优化之后再进行边缘化，可以保证边缘化结果的准确性
+ * 2.至于是先优化再边缘化旧帧，还是先边缘化旧帧再优化，这里实际上是可以讨论的
+ * 模型给出的解释是：旧帧的详细观测信息被简化为先验分布，可能导致优化结果偏离真实状态（尤其在旧帧观测精度较高时）
+ * 这里如果从FEJ的角度去考虑，对于旧的帧保留旧帧进行优化，理论上漂移会小一些
+ * 
+ */
 void Estimator::optimization()
 {
     TicToc t_whole, t_prepare;
@@ -1193,6 +1212,8 @@ void Estimator::optimization()
     //cout << summary.BriefReport() << endl;
     ROS_DEBUG("Iterations : %d", static_cast<int>(summary.iterations.size()));
     //printf("solver costs: %f \n", t_solver.toc());
+    /// !!!! 到这里优化的工作就结束了
+    /// 下面是边缘化工作的执行！！！！
 
     double2vector();
     //printf("frame_count: %d \n", frame_count);
@@ -1209,6 +1230,7 @@ void Estimator::optimization()
         if (last_marginalization_info && last_marginalization_info->valid)
         {
             vector<int> drop_set;
+            // 如果是边缘化掉最老的一帧，那么把最老一帧的信息扔到drop_set中
             for (int i = 0; i < static_cast<int>(last_marginalization_parameter_blocks.size()); i++)
             {
                 if (last_marginalization_parameter_blocks[i] == para_Pose[0] ||
@@ -1390,6 +1412,10 @@ void Estimator::optimization()
     //printf("whole time for ceres: %f \n", t_whole.toc());
 }
 
+/**
+ * @brief 滑窗处理，根据划掉的是旧帧还是次新帧，来进行不同的处理
+ * 
+ */
 void Estimator::slideWindow()
 {
     TicToc t_margin;
@@ -1564,6 +1590,22 @@ void Estimator::predictPtsInNextFrame()
     //printf("estimator output %d predict pts\n",(int)predictPts.size());
 }
 
+/**
+ * @brief 第i帧和第j帧的R和P等信息
+ * 
+ * @param Ri 
+ * @param Pi 
+ * @param rici 
+ * @param tici 
+ * @param Rj 
+ * @param Pj 
+ * @param ricj imu系与相机系之间的旋转
+ * @param ticj imu系与相机系之间的平移 
+ * @param depth 
+ * @param uvi 
+ * @param uvj 
+ * @return double 
+ */
 double Estimator::reprojectionError(Matrix3d &Ri, Vector3d &Pi, Matrix3d &rici, Vector3d &tici,
                                  Matrix3d &Rj, Vector3d &Pj, Matrix3d &ricj, Vector3d &ticj, 
                                  double depth, Vector3d &uvi, Vector3d &uvj)
@@ -1576,6 +1618,15 @@ double Estimator::reprojectionError(Matrix3d &Ri, Vector3d &Pi, Matrix3d &rici, 
     return sqrt(rx * rx + ry * ry);
 }
 
+/**
+ * @brief 外点剔除逻辑，看起来应该是可以优化的
+ * 遍历所有被管理的特征点（f_manager.feature），
+ * 对每个特征点，计算它在多个关键帧中的重投影误差平均值，
+ * 若平均重投影误差超过阈值（这里是3像素左右，乘了焦距换算），
+ * 则认为该特征点为外点，加入剔除集合 removeIndex。
+ * 
+ * @param removeIndex 
+ */
 void Estimator::outliersRejection(set<int> &removeIndex)
 {
     //return;
@@ -1636,6 +1687,13 @@ void Estimator::outliersRejection(set<int> &removeIndex)
     }
 }
 
+/**
+ * @brief 位姿积分
+ * 
+ * @param t 
+ * @param linear_acceleration 
+ * @param angular_velocity 
+ */
 void Estimator::fastPredictIMU(double t, Eigen::Vector3d linear_acceleration, Eigen::Vector3d angular_velocity)
 {
     double dt = t - latest_time;
@@ -1651,6 +1709,10 @@ void Estimator::fastPredictIMU(double t, Eigen::Vector3d linear_acceleration, Ei
     latest_gyr_0 = angular_velocity;
 }
 
+/**
+ * @brief 更新最新状态
+ * 
+ */
 void Estimator::updateLatestStates()
 {
     mPropagate.lock();
