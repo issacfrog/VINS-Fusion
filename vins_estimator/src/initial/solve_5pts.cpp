@@ -200,7 +200,15 @@ namespace cv {
     }
 }
 
-
+/**
+ * @brief 调用opencv接口使用两帧之间的匹配点对进行位姿回复
+ * 
+ * @param corres 
+ * @param Rotation 
+ * @param Translation 
+ * @return true 
+ * @return false 
+ */
 bool MotionEstimator::solveRelativeRT(const vector<pair<Vector3d, Vector3d>> &corres, Matrix3d &Rotation, Vector3d &Translation)
 {
     if (corres.size() >= 15)

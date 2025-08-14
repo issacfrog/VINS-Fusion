@@ -641,11 +641,23 @@ void Estimator::processImage(const map<int, vector<pair<int, Eigen::Matrix<doubl
     }  
 }
 
+/**
+ * @brief 初始化流程
+ * 1. 检测IMU观测性
+ * 2. 全局SFM
+ * 3. 执行PnP恢复出多帧
+ * 3. 视觉与IMU对齐
+ * 
+ * @return true 
+ * @return false 
+ */
 bool Estimator::initialStructure()
 {
     TicToc t_sfm;
+    // 检测加速度变化情况，变化过大的时候不进行处理
     //check imu observibility
     {
+        // 计算出平均的加速度
         map<double, ImageFrame>::iterator frame_it;
         Vector3d sum_g;
         for (frame_it = all_image_frame.begin(), frame_it++; frame_it != all_image_frame.end(); frame_it++)
@@ -656,6 +668,8 @@ bool Estimator::initialStructure()
         }
         Vector3d aver_g;
         aver_g = sum_g * 1.0 / ((int)all_image_frame.size() - 1);
+
+        // 计算出加速度噪声
         double var = 0;
         for (frame_it = all_image_frame.begin(), frame_it++; frame_it != all_image_frame.end(); frame_it++)
         {
@@ -672,6 +686,7 @@ bool Estimator::initialStructure()
             //return false;
         }
     }
+    // 全局SFM
     // global sfm
     Quaterniond Q[frame_count + 1];
     Vector3d T[frame_count + 1];
@@ -699,6 +714,9 @@ bool Estimator::initialStructure()
         ROS_INFO("Not enough features or parallax; Move device around");
         return false;
     }
+
+    // 执行SFM SFM的相关处理需要看看代码
+    // SFM恢复出3D点云和相机位姿
     GlobalSFM sfm;
     if(!sfm.construct(frame_count + 1, Q, T, l,
               relative_R, relative_T,
@@ -709,6 +727,7 @@ bool Estimator::initialStructure()
         return false;
     }
 
+    // SFM求解出的是全部关键帧的位姿，在关键帧之外则需要使用PnP进行下一步的处理
     //solve pnp for all frame
     map<double, ImageFrame>::iterator frame_it;
     map<int, Vector3d>::iterator it;
@@ -717,6 +736,8 @@ bool Estimator::initialStructure()
     {
         // provide initial guess
         cv::Mat r, rvec, t, D, tmp_r;
+        // 对于关键帧，直接进行位姿的赋值
+        // 通过时间筛选出关键帧的
         if((frame_it->first) == Headers[i])
         {
             frame_it->second.is_key_frame = true;
@@ -729,20 +750,30 @@ bool Estimator::initialStructure()
         {
             i++;
         }
+        // 使用上一帧位姿就行初始化
         Matrix3d R_inital = (Q[i].inverse()).toRotationMatrix();
         Vector3d P_inital = - R_inital * T[i];
         cv::eigen2cv(R_inital, tmp_r);
         cv::Rodrigues(tmp_r, rvec);
         cv::eigen2cv(P_inital, t);
 
+        // 构建3D点与2D点的匹配关系
         frame_it->second.is_key_frame = false;
         vector<cv::Point3f> pts_3_vector;
         vector<cv::Point2f> pts_2_vector;
+        // 遍历frame中的特征点集合
+        // frame_it->second.points 本帧的观测列表
         for (auto &id_pts : frame_it->second.points)
         {
+            // id_pts 取到的是某个feature_id
             int feature_id = id_pts.first;
+            // 获取到3d特征点
             for (auto &i_p : id_pts.second)
             {
+                // i_p 遍历它在本帧不同相机的观测 
+                // 单目的时候实际上只有一个
+                // sfm_tracked_points 是 Global SFM 已成功三角化的特征集合
+                // 至此构建PnP对的条件都已经集齐了
                 it = sfm_tracked_points.find(feature_id);
                 if(it != sfm_tracked_points.end())
                 {
@@ -777,6 +808,8 @@ bool Estimator::initialStructure()
         frame_it->second.R = R_pnp * RIC[0].transpose();
         frame_it->second.T = T_pnp;
     }
+
+    // 视觉与IMU对齐
     if (visualInitialAlign())
         return true;
     else
@@ -787,10 +820,17 @@ bool Estimator::initialStructure()
 
 }
 
+/**
+ * @brief 视觉与IMU的初始对齐
+ * 
+ * @return true 
+ * @return false 
+ */
 bool Estimator::visualInitialAlign()
 {
     TicToc t_g;
     VectorXd x;
+    // 1. 调用初始化中视觉与IMU的对齐，其中有对尺度的求解
     //solve scale
     bool result = VisualIMUAlignment(all_image_frame, Bgs, g, x);
     if(!result)
@@ -799,6 +839,7 @@ bool Estimator::visualInitialAlign()
         return false;
     }
 
+    // 2. 更新所有关键帧的位姿信息
     // change state
     for (int i = 0; i <= frame_count; i++)
     {
@@ -809,13 +850,20 @@ bool Estimator::visualInitialAlign()
         all_image_frame[Headers[i]].is_key_frame = true;
     }
 
+    // 获取尺度信息
     double s = (x.tail<1>())(0);
+
+    // 使用IMU的bias重新进行积分
     for (int i = 0; i <= WINDOW_SIZE; i++)
     {
         pre_integrations[i]->repropagate(Vector3d::Zero(), Bgs[i]);
     }
+
+    // 轨迹尺度校正 → 坐标系从相机中心切换到IMU中心 → 把第0帧平移到原点
     for (int i = frame_count; i >= 0; i--)
         Ps[i] = s * Ps[i] - Rs[i] * TIC[0] - (s * Ps[0] - Rs[0] * TIC[0]);
+    
+    // 3. 获取速度并进行坐标系的转换
     int kv = -1;
     map<double, ImageFrame>::iterator frame_i;
     for (frame_i = all_image_frame.begin(); frame_i != all_image_frame.end(); frame_i++)
@@ -827,10 +875,13 @@ bool Estimator::visualInitialAlign()
         }
     }
 
+    // 4. 获取重力与视觉的坐标系偏差
     Matrix3d R0 = Utility::g2R(g);
     double yaw = Utility::R2ypr(R0 * Rs[0]).x();
     R0 = Utility::ypr2R(Eigen::Vector3d{-yaw, 0, 0}) * R0;
     g = R0 * g;
+
+    // 5. 执行坐标系对齐
     //Matrix3d rot_diff = R0 * Rs[0].transpose();
     Matrix3d rot_diff = R0;
     for (int i = 0; i <= frame_count; i++)
@@ -842,12 +893,22 @@ bool Estimator::visualInitialAlign()
     ROS_DEBUG_STREAM("g0     " << g.transpose());
     ROS_DEBUG_STREAM("my R0  " << Utility::R2ypr(Rs[0]).transpose()); 
 
+    // 6. 清楚之前的特征点深度信息，并通过三角化更新
     f_manager.clearDepth();
     f_manager.triangulate(frame_count, Ps, Rs, tic, ric);
 
     return true;
 }
 
+/**
+ * @brief 相对位姿的求解
+ * 
+ * @param relative_R 
+ * @param relative_T 
+ * @param l 
+ * @return true 
+ * @return false 
+ */
 bool Estimator::relativePose(Matrix3d &relative_R, Vector3d &relative_T, int &l)
 {
     // find previous frame which contians enough correspondance and parallex with newest frame
@@ -868,6 +929,8 @@ bool Estimator::relativePose(Matrix3d &relative_R, Vector3d &relative_T, int &l)
 
             }
             average_parallax = 1.0 * sum_parallax / int(corres.size());
+            // 在滑窗中找到与最新真有足够多的匹配点
+            // 视差足够大的帧
             if(average_parallax * 460 > 30 && m_estimator.solveRelativeRT(corres, relative_R, relative_T))
             {
                 l = i;
