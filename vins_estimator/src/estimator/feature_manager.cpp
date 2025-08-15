@@ -214,7 +214,15 @@ VectorXd FeatureManager::getDepthVector()
     return dep_vec;
 }
 
-
+/**
+ * @brief 使用先行代数的SVD方法做两视图三角化
+ * https://blog.csdn.net/Walking_roll/article/details/119984469 参考这里的求解过程
+ * @param Pose0 
+ * @param Pose1 
+ * @param point0 
+ * @param point1 
+ * @param point_3d 
+ */
 void FeatureManager::triangulatePoint(Eigen::Matrix<double, 3, 4> &Pose0, Eigen::Matrix<double, 3, 4> &Pose1,
                         Eigen::Vector2d &point0, Eigen::Vector2d &point1, Eigen::Vector3d &point_3d)
 {
@@ -231,7 +239,16 @@ void FeatureManager::triangulatePoint(Eigen::Matrix<double, 3, 4> &Pose0, Eigen:
     point_3d(2) = triangulated_point(2) / triangulated_point(3);
 }
 
-
+/**
+ * @brief 求解PnP（求相机位姿）
+ * 
+ * @param R 
+ * @param P 
+ * @param pts2D 
+ * @param pts3D 
+ * @return true 
+ * @return false 
+ */
 bool FeatureManager::solvePoseByPnP(Eigen::Matrix3d &R, Eigen::Vector3d &P, 
                                       vector<cv::Point2f> &pts2D, vector<cv::Point3f> &pts3D)
 {
@@ -276,6 +293,15 @@ bool FeatureManager::solvePoseByPnP(Eigen::Matrix3d &R, Eigen::Vector3d &P,
     return true;
 }
 
+/**
+ * @brief 使用PnP求解相机初始位姿
+ * 
+ * @param frameCnt 
+ * @param Ps 
+ * @param Rs 
+ * @param tic 
+ * @param ric 
+ */
 void FeatureManager::initFramePoseByPnP(int frameCnt, Vector3d Ps[], Matrix3d Rs[], Vector3d tic[], Matrix3d ric[])
 {
 
@@ -319,6 +345,15 @@ void FeatureManager::initFramePoseByPnP(int frameCnt, Vector3d Ps[], Matrix3d Rs
     }
 }
 
+/**
+ * @brief 
+ * 
+ * @param frameCnt 当前帧数
+ * @param Ps 每帧世界系下的位置
+ * @param Rs 每帧世界系下的旋转
+ * @param tic 每帧imu到相机的平移
+ * @param ric 每帧imu到相机的旋转
+ */
 void FeatureManager::triangulate(int frameCnt, Vector3d Ps[], Matrix3d Rs[], Vector3d tic[], Matrix3d ric[])
 {
     for (auto &it_per_id : feature)
@@ -326,12 +361,16 @@ void FeatureManager::triangulate(int frameCnt, Vector3d Ps[], Matrix3d Rs[], Vec
         if (it_per_id.estimated_depth > 0)
             continue;
 
+        // 双目执行三角化
         if(STEREO && it_per_id.feature_per_frame[0].is_stereo)
         {
+            // 拿到相机系到世界系的投影矩阵
             int imu_i = it_per_id.start_frame;
             Eigen::Matrix<double, 3, 4> leftPose;
             Eigen::Vector3d t0 = Ps[imu_i] + Rs[imu_i] * tic[0];
             Eigen::Matrix3d R0 = Rs[imu_i] * ric[0];
+            // [Rcw | -Rwc*Pw] * [x,y,z,1]^T = Xc
+            // [x,y,z,1] 对应了Pw
             leftPose.leftCols<3>() = R0.transpose();
             leftPose.rightCols<1>() = -R0.transpose() * t0;
             //cout << "left pose " << leftPose << endl;
@@ -350,9 +389,10 @@ void FeatureManager::triangulate(int frameCnt, Vector3d Ps[], Matrix3d Rs[], Vec
             //cout << "point0 " << point0.transpose() << endl;
             //cout << "point1 " << point1.transpose() << endl;
 
+            // 这里输入与三角化需要的一致
             triangulatePoint(leftPose, rightPose, point0, point1, point3d);
             Eigen::Vector3d localPoint;
-            localPoint = leftPose.leftCols<3>() * point3d + leftPose.rightCols<1>();
+            localPoint = leftPose.leftCols<3>() * point3d + leftPose.rightCols<1>();    // 计算得到目标点在左目下的坐标
             double depth = localPoint.z();
             if (depth > 0)
                 it_per_id.estimated_depth = depth;
@@ -365,7 +405,7 @@ void FeatureManager::triangulate(int frameCnt, Vector3d Ps[], Matrix3d Rs[], Vec
             */
             continue;
         }
-        else if(it_per_id.feature_per_frame.size() > 1)
+        else if(it_per_id.feature_per_frame.size() > 1) // 用两帧三角化
         {
             int imu_i = it_per_id.start_frame;
             Eigen::Matrix<double, 3, 4> leftPose;
@@ -400,6 +440,8 @@ void FeatureManager::triangulate(int frameCnt, Vector3d Ps[], Matrix3d Rs[], Vec
             */
             continue;
         }
+
+        // 特征点过少则无效
         it_per_id.used_num = it_per_id.feature_per_frame.size();
         if (it_per_id.used_num < 4)
             continue;
