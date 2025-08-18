@@ -23,7 +23,10 @@ using namespace Eigen;
 using namespace std;
 
 
-
+/**
+ * @brief 每个路标点由多个连续的图像观测到
+ * 
+ */
 struct SFMFeature
 {
     bool state;

@@ -138,6 +138,13 @@ bool FeatureManager::addFeatureCheckParallax(int frame_count, const map<int, vec
     }
 }
 
+/**
+ * @brief 给定两个帧号，求解出同时被这两帧都观察到的特征点对（匹配对）
+ * 
+ * @param frame_count_l 
+ * @param frame_count_r 
+ * @return vector<pair<Vector3d, Vector3d>> 
+ */
 vector<pair<Vector3d, Vector3d>> FeatureManager::getCorresponding(int frame_count_l, int frame_count_r)
 {
     vector<pair<Vector3d, Vector3d>> corres;
@@ -446,17 +453,20 @@ void FeatureManager::triangulate(int frameCnt, Vector3d Ps[], Matrix3d Rs[], Vec
         if (it_per_id.used_num < 4)
             continue;
 
+        // 基于多视角（多帧）观测的特征点初始深度估计
         int imu_i = it_per_id.start_frame, imu_j = imu_i - 1;
 
         Eigen::MatrixXd svd_A(2 * it_per_id.feature_per_frame.size(), 4);
         int svd_idx = 0;
 
+        // 相机的初始姿态
         Eigen::Matrix<double, 3, 4> P0;
         Eigen::Vector3d t0 = Ps[imu_i] + Rs[imu_i] * tic[0];
         Eigen::Matrix3d R0 = Rs[imu_i] * ric[0];
         P0.leftCols<3>() = Eigen::Matrix3d::Identity();
         P0.rightCols<1>() = Eigen::Vector3d::Zero();
 
+        // 后续帧位姿
         for (auto &it_per_frame : it_per_id.feature_per_frame)
         {
             imu_j++;
@@ -469,15 +479,21 @@ void FeatureManager::triangulate(int frameCnt, Vector3d Ps[], Matrix3d Rs[], Vec
             P.leftCols<3>() = R.transpose();
             P.rightCols<1>() = -R.transpose() * t;
             Eigen::Vector3d f = it_per_frame.point.normalized();
+            // 使用视觉的叉积约束
+            // (u, v, 1)^T (x) (PX) = 0
+            // 其中(x)表示叉积, X是坐标，P是投影矩阵
+            // 由此构建出约束方程
             svd_A.row(svd_idx++) = f[0] * P.row(2) - f[2] * P.row(0);
             svd_A.row(svd_idx++) = f[1] * P.row(2) - f[2] * P.row(1);
 
             if (imu_i == imu_j)
                 continue;
         }
+        // 
         ROS_ASSERT(svd_idx == svd_A.rows());
         Eigen::Vector4d svd_V = Eigen::JacobiSVD<Eigen::MatrixXd>(svd_A, Eigen::ComputeThinV).matrixV().rightCols<1>();
         double svd_method = svd_V[2] / svd_V[3];
+        // 求解深度的方法是用深度z坐标除以齐次因子w，得到估计的深度
         //it_per_id->estimated_depth = -b / A;
         //it_per_id->estimated_depth = svd_V[2] / svd_V[3];
 

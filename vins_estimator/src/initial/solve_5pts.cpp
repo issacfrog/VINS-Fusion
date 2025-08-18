@@ -13,6 +13,14 @@
 
 
 namespace cv {
+    /**
+     * @brief 使用本质矩阵求解R和T,由于有多种解，这里是将所有结果都扔到里面了
+     * 
+     * @param _E 
+     * @param _R1 
+     * @param _R2 
+     * @param _t 
+     */
     void decomposeEssentialMat( InputArray _E, OutputArray _R1, OutputArray _R2, OutputArray _t )
     {
 
@@ -38,6 +46,18 @@ namespace cv {
         t.copyTo(_t);
     }
 
+    /**
+     * @brief 从本质矩阵E和匹配点恢复两帧相机的相对旋转和平移，并进行正深度检验，由此选择正确的R和T
+     * 
+     * @param E 
+     * @param _points1 
+     * @param _points2 
+     * @param _cameraMatrix 
+     * @param _R 
+     * @param _t 
+     * @param _mask 
+     * @return int 
+     */
     int recoverPose( InputArray E, InputArray _points1, InputArray _points2, InputArray _cameraMatrix,
                          OutputArray _R, OutputArray _t, InputOutputArray _mask)
     {

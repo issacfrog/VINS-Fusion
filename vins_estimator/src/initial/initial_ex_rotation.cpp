@@ -19,21 +19,36 @@ InitialEXRotation::InitialEXRotation(){
     ric = Matrix3d::Identity();
 }
 
+/**
+ * @brief 计算外参旋转标定参数
+ * 
+ * @param corres 
+ * @param delta_q_imu 
+ * @param calib_ric_result 
+ * @return true 
+ * @return false 
+ */
 bool InitialEXRotation::CalibrationExRotation(vector<pair<Vector3d, Vector3d>> corres, Quaterniond delta_q_imu, Matrix3d &calib_ric_result)
 {
     frame_count++;
-    Rc.push_back(solveRelativeR(corres));
-    Rimu.push_back(delta_q_imu.toRotationMatrix());
-    Rc_g.push_back(ric.inverse() * delta_q_imu * ric);
+    Rc.push_back(solveRelativeR(corres));                   // 相机两帧之间的相对旋转
+    Rimu.push_back(delta_q_imu.toRotationMatrix());         // IMU两帧之间的旋转
+    Rc_g.push_back(ric.inverse() * delta_q_imu * ric);      // 当前ric下的旋转映射
 
     Eigen::MatrixXd A(frame_count * 4, 4);
     A.setZero();
     int sum_ok = 0;
+    // 构建公式
+    // qc = qic * qimu * qic^-1
+    // 对应的qc * qic = qic * qimu
+    // 有 L(qc)qic = R(qimu)qic
+    // 也即 (L - R)qic = 0 从而构建了相应的求解方法
     for (int i = 1; i <= frame_count; i++)
     {
         Quaterniond r1(Rc[i]);
         Quaterniond r2(Rc_g[i]);
 
+        // 计算相机旋转与IMU映射旋转之间的角度差，注意这里求解角度差的方式挺有意思的！
         double angular_distance = 180 / M_PI * r1.angularDistance(r2);
         ROS_DEBUG(
             "%d %f", i, angular_distance);
@@ -67,7 +82,7 @@ bool InitialEXRotation::CalibrationExRotation(vector<pair<Vector3d, Vector3d>> c
     //cout << svd.singularValues().transpose() << endl;
     //cout << ric << endl;
     Vector3d ric_cov;
-    ric_cov = svd.singularValues().tail<3>();
+    ric_cov = svd.singularValues().tail<3>();   // 最小的直观理解，残差一定存在，最小意味着乘出来的结果最小
     if (frame_count >= WINDOW_SIZE && ric_cov(1) > 0.25)
     {
         calib_ric_result = ric;
@@ -77,25 +92,36 @@ bool InitialEXRotation::CalibrationExRotation(vector<pair<Vector3d, Vector3d>> c
         return false;
 }
 
+/**
+ * @brief 利用匹配的特征点对，估计两个相机帧之间的相对旋转矩阵R的过程
+ * 
+ * @param corres 
+ * @return Matrix3d 
+ */
 Matrix3d InitialEXRotation::solveRelativeR(const vector<pair<Vector3d, Vector3d>> &corres)
 {
     if (corres.size() >= 9)
     {
+        // 构建相机点对
         vector<cv::Point2f> ll, rr;
         for (int i = 0; i < int(corres.size()); i++)
         {
             ll.push_back(cv::Point2f(corres[i].first(0), corres[i].first(1)));
             rr.push_back(cv::Point2f(corres[i].second(0), corres[i].second(1)));
         }
+        // 用匹配点估计出相应的基础矩阵F,由于坐标系已经归一化，因此这里实际求解的是本质矩阵E
         cv::Mat E = cv::findFundamentalMat(ll, rr);
         cv::Mat_<double> R1, R2, t1, t2;
         decomposeE(E, R1, R2, t1, t2);
 
+        // 由于基础矩阵的求解有多种形式，因此这里会有多种位姿，这里一并都求解出来
         if (determinant(R1) + 1.0 < 1e-09)
         {
             E = -E;
             decomposeE(E, R1, R2, t1, t2);
         }
+
+        // 通过三角化进行求解结果的校验（这里的校验感觉使用ORB-SLAM3的代码会更好些）
         double ratio1 = max(testTriangulation(ll, rr, R1, t1), testTriangulation(ll, rr, R1, t2));
         double ratio2 = max(testTriangulation(ll, rr, R2, t1), testTriangulation(ll, rr, R2, t2));
         cv::Mat_<double> ans_R_cv = ratio1 > ratio2 ? R1 : R2;
@@ -109,6 +135,15 @@ Matrix3d InitialEXRotation::solveRelativeR(const vector<pair<Vector3d, Vector3d>
     return Matrix3d::Identity();
 }
 
+/**
+ * @brief 三角化校验不看了
+ * 
+ * @param l 
+ * @param r 
+ * @param R 
+ * @param t 
+ * @return double 
+ */
 double InitialEXRotation::testTriangulation(const vector<cv::Point2f> &l,
                                           const vector<cv::Point2f> &r,
                                           cv::Mat_<double> R, cv::Mat_<double> t)
@@ -135,6 +170,15 @@ double InitialEXRotation::testTriangulation(const vector<cv::Point2f> &l,
     return 1.0 * front_count / pointcloud.cols;
 }
 
+/**
+ * @brief 根据基础矩阵E求解相应的R和T
+ * 
+ * @param E 
+ * @param R1 
+ * @param R2 
+ * @param t1 
+ * @param t2 
+ */
 void InitialEXRotation::decomposeE(cv::Mat E,
                                  cv::Mat_<double> &R1, cv::Mat_<double> &R2,
                                  cv::Mat_<double> &t1, cv::Mat_<double> &t2)

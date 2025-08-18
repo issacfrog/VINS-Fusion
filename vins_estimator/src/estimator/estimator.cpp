@@ -902,7 +902,7 @@ bool Estimator::visualInitialAlign()
 
 /**
  * @brief 相对位姿的求解
- * 
+ * 注意，这里是只要找到两个觉得可以进行恢复的帧就进行位姿恢复的计算了
  * @param relative_R 
  * @param relative_T 
  * @param l 
@@ -915,6 +915,8 @@ bool Estimator::relativePose(Matrix3d &relative_R, Vector3d &relative_T, int &l)
     for (int i = 0; i < WINDOW_SIZE; i++)
     {
         vector<pair<Vector3d, Vector3d>> corres;
+        // i从零开始，向后搜索到WINDOW_SIZE，求解的是第i帧和最后一帧的匹配点对
+        // 点对的数量超过一定数量，并通过一些筛选之后，认为该帧可用，并将这两帧作为筛选出的帧进行相对位姿的求解
         corres = f_manager.getCorresponding(i, WINDOW_SIZE);
         if (corres.size() > 20)
         {

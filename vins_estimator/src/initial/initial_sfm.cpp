@@ -13,6 +13,15 @@
 
 GlobalSFM::GlobalSFM(){}
 
+/**
+ * @brief 三角化求解点，用于恢复三维结构
+ * 
+ * @param Pose0 
+ * @param Pose1 
+ * @param point0 
+ * @param point1 
+ * @param point_3d 
+ */
 void GlobalSFM::triangulatePoint(Eigen::Matrix<double, 3, 4> &Pose0, Eigen::Matrix<double, 3, 4> &Pose1,
 						Vector2d &point0, Vector2d &point1, Vector3d &point_3d)
 {
@@ -30,9 +39,20 @@ void GlobalSFM::triangulatePoint(Eigen::Matrix<double, 3, 4> &Pose0, Eigen::Matr
 }
 
 
+/**
+ * @brief 典型的单帧PnP位姿估计
+ * 
+ * @param R_initial 
+ * @param P_initial 
+ * @param i 
+ * @param sfm_f 
+ * @return true 
+ * @return false 
+ */
 bool GlobalSFM::solveFrameByPnP(Matrix3d &R_initial, Vector3d &P_initial, int i,
 								vector<SFMFeature> &sfm_f)
 {
+	// 构建匹配点对
 	vector<cv::Point2f> pts_2_vector;
 	vector<cv::Point3f> pts_3_vector;
 	for (int j = 0; j < feature_num; j++)
@@ -59,17 +79,21 @@ bool GlobalSFM::solveFrameByPnP(Matrix3d &R_initial, Vector3d &P_initial, int i,
 		if (int(pts_2_vector.size()) < 10)
 			return false;
 	}
-	cv::Mat r, rvec, t, D, tmp_r;
+	cv::Mat r, rvec, t, D, tmp_r;	// 这里都是cv::mat但是对应的维度却不一样？
 	cv::eigen2cv(R_initial, tmp_r);
 	cv::Rodrigues(tmp_r, rvec);
 	cv::eigen2cv(P_initial, t);
 	cv::Mat K = (cv::Mat_<double>(3, 3) << 1, 0, 0, 0, 1, 0, 0, 0, 1);
 	bool pnp_succ;
+
+	// 执行PnP求解
 	pnp_succ = cv::solvePnP(pts_3_vector, pts_2_vector, K, D, rvec, t, 1);
 	if(!pnp_succ)
 	{
 		return false;
 	}
+
+	// 恢复位姿
 	cv::Rodrigues(rvec, r);
 	//cout << "r " << endl << r << endl;
 	MatrixXd R_pnp;
@@ -82,6 +106,15 @@ bool GlobalSFM::solveFrameByPnP(Matrix3d &R_initial, Vector3d &P_initial, int i,
 
 }
 
+/**
+ * @brief 基于两帧进行三角化，这里直接处理的接口
+ * 
+ * @param frame0 
+ * @param Pose0 相机外参（投影矩阵）
+ * @param frame1 
+ * @param Pose1 
+ * @param sfm_f 
+ */
 void GlobalSFM::triangulateTwoFrames(int frame0, Eigen::Matrix<double, 3, 4> &Pose0, 
 									 int frame1, Eigen::Matrix<double, 3, 4> &Pose1,
 									 vector<SFMFeature> &sfm_f)
@@ -111,7 +144,7 @@ void GlobalSFM::triangulateTwoFrames(int frame0, Eigen::Matrix<double, 3, 4> &Po
 		{
 			Vector3d point_3d;
 			triangulatePoint(Pose0, Pose1, point0, point1, point_3d);
-			sfm_f[j].state = true;
+			sfm_f[j].state = true;	// 三角化成功则更新状态
 			sfm_f[j].position[0] = point_3d(0);
 			sfm_f[j].position[1] = point_3d(1);
 			sfm_f[j].position[2] = point_3d(2);
@@ -125,10 +158,33 @@ void GlobalSFM::triangulateTwoFrames(int frame0, Eigen::Matrix<double, 3, 4> &Po
 //  c_translation cam_R_w
 // relative_q[i][j]  j_q_i
 // relative_t[i][j]  j_t_ji  (j < i)
+/**
+ * @brief 
+ * 1.对于参考帧和当前帧之间的某一帧，三角化该帧与当前帧的路标点，若其不是参考帧，则先用PnP求解该帧位姿
+ * 2.对于参考帧和当前帧之间的某一帧，三角化参考帧到该帧的路标点
+ * 3.对于第一帧和参考帧之间的某一帧，先用PnP求解该帧位姿，然后三角化得到该帧到参考帧的路标点
+ * 4.三角化其他没有恢复的路标点
+ * 5.BA优化滑窗内所有位姿
+ * 
+ * 注意这里求解的时候是l和最后一帧之间分别进行了三角化，这样的目的是为了提升鲁棒性
+ * 
+ * @param frame_num 总帧数
+ * @param q 每帧相机的初始旋转
+ * @param T 每帧相机的初始平移
+ * @param l 选定的参考帧 参考帧本质上是上一步选出来的共视帧
+ * @param relative_R 
+ * @param relative_T 
+ * @param sfm_f 特征点集合
+ * @param sfm_tracked_points 三角化后的特征点 
+ * @return true 
+ * @return false 
+ */
 bool GlobalSFM::construct(int frame_num, Quaterniond* q, Vector3d* T, int l,
 			  const Matrix3d relative_R, const Vector3d relative_T,
 			  vector<SFMFeature> &sfm_f, map<int, Vector3d> &sfm_tracked_points)
 {
+	// 将参考帧l当做世界坐标系的原点
+	// 最后一阵
 	feature_num = sfm_f.size();
 	//cout << "set 0 and " << l << " as known " << endl;
 	// have relative_r relative_t
@@ -138,6 +194,7 @@ bool GlobalSFM::construct(int frame_num, Quaterniond* q, Vector3d* T, int l,
 	q[l].y() = 0;
 	q[l].z() = 0;
 	T[l].setZero();
+	// 最后一帧用已知的相对位姿进行初始化
 	q[frame_num - 1] = q[l] * Quaterniond(relative_R);
 	T[frame_num - 1] = relative_T;
 	//cout << "init q_l " << q[l].w() << " " << q[l].vec().transpose() << endl;
@@ -166,6 +223,7 @@ bool GlobalSFM::construct(int frame_num, Quaterniond* q, Vector3d* T, int l,
 
 	//1: trangulate between l ----- frame_num - 1
 	//2: solve pnp l + 1; trangulate l + 1 ------- frame_num - 1; 
+	// 从l开始向后进行三角化每次是用第i帧和最后一帧进行三角化，这里为什么第l帧也处理了？
 	for (int i = l; i < frame_num - 1 ; i++)
 	{
 		// solve pnp
@@ -188,6 +246,7 @@ bool GlobalSFM::construct(int frame_num, Quaterniond* q, Vector3d* T, int l,
 	//3: triangulate l-----l+1 l+2 ... frame_num -2
 	for (int i = l + 1; i < frame_num - 1; i++)
 		triangulateTwoFrames(l, Pose[l], i, Pose[i], sfm_f);
+	// 向后PnP三角化
 	//4: solve pnp l-1; triangulate l-1 ----- l
 	//             l-2              l-2 ----- l
 	for (int i = l - 1; i >= 0; i--)
@@ -227,19 +286,6 @@ bool GlobalSFM::construct(int frame_num, Quaterniond* q, Vector3d* T, int l,
 		}		
 	}
 
-/*
-	for (int i = 0; i < frame_num; i++)
-	{
-		q[i] = c_Rotation[i].transpose(); 
-		cout << "solvePnP  q" << " i " << i <<"  " <<q[i].w() << "  " << q[i].vec().transpose() << endl;
-	}
-	for (int i = 0; i < frame_num; i++)
-	{
-		Vector3d t_tmp;
-		t_tmp = -1 * (q[i] * c_Translation[i]);
-		cout << "solvePnP  t" << " i " << i <<"  " << t_tmp.x() <<"  "<< t_tmp.y() <<"  "<< t_tmp.z() << endl;
-	}
-*/
 	//full BA
 	ceres::Problem problem;
 	ceres::LocalParameterization* local_parameterization = new ceres::QuaternionParameterization();
